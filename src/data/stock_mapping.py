@@ -107,7 +107,7 @@ STOCK_NAME_MAP = {
 }
 
 
-def is_meaningful_stock_name(name: str | None, stock_code: str) -> bool:
+def is_meaningful_stock_name(name: Optional[str], stock_code: str) -> bool:
     """Return whether a stock name is useful for display or caching."""
     if not name:
         return False

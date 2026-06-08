@@ -710,12 +710,18 @@ def main() -> int:
     Returns:
         退出码（0 表示成功）
     """
+    import time as _time
+    
     # 解析命令行参数
+    print("[STARTUP] 步骤1: 解析命令行参数...", flush=True)
     args = parse_arguments()
+    print("[STARTUP] ✅ 步骤1完成", flush=True)
 
     # 在配置加载前先初始化 bootstrap 日志，确保早期失败也能落盘
+    print("[STARTUP] 步骤2: 初始化bootstrap日志...", flush=True)
     try:
         _setup_bootstrap_logging(debug=args.debug)
+        print("[STARTUP] ✅ 步骤2完成", flush=True)
     except Exception as exc:
         logging.basicConfig(
             level=logging.DEBUG if getattr(args, "debug", False) else logging.INFO,
@@ -723,18 +729,28 @@ def main() -> int:
             stream=sys.stderr,
         )
         logger.warning("Bootstrap 日志初始化失败，已回退到 stderr: %s", exc)
+        print(f"[STARTUP] ⚠️ Bootstrap日志初始化失败: {exc}", flush=True)
 
     # 加载配置（在 bootstrap logging 之后执行，确保异常有日志）
+    print("[STARTUP] 步骤3: 开始加载配置 get_config()...", flush=True)
+    config_start = _time.time()
     try:
         config = get_config()
+        config_elapsed = _time.time() - config_start
+        print(f"[STARTUP] ✅ 步骤3完成 (耗时: {config_elapsed:.2f}秒)", flush=True)
     except Exception as exc:
+        config_elapsed = _time.time() - config_start
+        print(f"[STARTUP] ❌ 步骤3失败 (耗时: {config_elapsed:.2f}秒): {exc}", flush=True)
         logger.exception("加载配置失败: %s", exc)
         return 1
 
     # 配置日志（输出到控制台和文件）
+    print("[STARTUP] 步骤4: 配置日志系统...", flush=True)
     try:
         setup_logging(log_prefix="stock_analysis", debug=args.debug, log_dir=config.log_dir)
+        print("[STARTUP] ✅ 步骤4完成", flush=True)
     except Exception as exc:
+        print(f"[STARTUP] ❌ 步骤4失败: {exc}", flush=True)
         logger.exception("切换到配置日志目录失败: %s", exc)
         return 1
 
@@ -898,8 +914,11 @@ def main() -> int:
             schedule_time_provider = _build_schedule_time_provider(config.schedule_time)
 
             def scheduled_task():
+                print("[SCHEDULED_TASK] 开始执行定时任务...", flush=True)
                 runtime_config = _reload_runtime_config()
+                print("[SCHEDULED_TASK] 配置重新加载完成", flush=True)
                 run_full_analysis(runtime_config, args, scheduled_stock_codes)
+                print("[SCHEDULED_TASK] 定时任务执行完成", flush=True)
 
             background_tasks = []
             if getattr(config, 'agent_event_monitor_enabled', False):
@@ -923,6 +942,7 @@ def main() -> int:
                 else:
                     logger.info("EventMonitor 已启用，但未加载到有效规则，跳过后台提醒任务")
 
+            print("[MAIN] 即将调用 run_with_schedule...", flush=True)
             run_with_schedule(
                 task=scheduled_task,
                 schedule_time=config.schedule_time,
@@ -930,6 +950,7 @@ def main() -> int:
                 background_tasks=background_tasks,
                 schedule_time_provider=schedule_time_provider,
             )
+            print("[MAIN] run_with_schedule 返回，程序即将退出", flush=True)
             return 0
 
         # 模式3: 正常单次运行

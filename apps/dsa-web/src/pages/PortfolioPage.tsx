@@ -1196,7 +1196,7 @@ const PortfolioPage: React.FC = () => {
 
       <section className="grid grid-cols-1 xl:grid-cols-2 gap-3">
         <Card padding="md">
-          <h3 className="text-sm font-semibold text-foreground mb-3">券商 CSV 导入</h3>
+          <h3 className="text-sm font-semibold text-foreground mb-3">券商导入</h3>
           <div className="space-y-2">
             {brokerLoadWarning ? (
               <InlineAlert
@@ -1214,8 +1214,8 @@ const PortfolioPage: React.FC = () => {
                 )}
               </select>
               <label className={PORTFOLIO_FILE_PICKER_CLASS}>
-                选择 CSV
-                <input type="file" accept=".csv" className="hidden"
+                选择文件
+                <input type="file" accept=".csv,.xlsx" className="hidden"
                   onChange={(e) => setCsvFile(e.target.files && e.target.files[0] ? e.target.files[0] : null)} />
               </label>
             </div>
@@ -1235,7 +1235,7 @@ const PortfolioPage: React.FC = () => {
             {csvParseResult ? (
               <InlineAlert
                 variant={getCsvParseVariant(csvParseResult)}
-                title="CSV 解析结果"
+                title="持仓解析结果"
                 message={`有效 ${csvParseResult.recordCount} 条，跳过 ${csvParseResult.skippedCount} 条，错误 ${csvParseResult.errorCount} 条。`}
                 className="rounded-lg px-3 py-2 text-xs shadow-none"
               />

@@ -18,7 +18,7 @@ import csv
 import logging
 from datetime import datetime
 from io import StringIO
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Union
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -41,7 +41,7 @@ try:
 except (ImportError, ModuleNotFoundError):
     STOCK_NAME_MAP = {}
 
-    def is_meaningful_stock_name(name: str | None, stock_code: str) -> bool:
+    def is_meaningful_stock_name(name: Optional[str], stock_code: str) -> bool:
         """简单的名称有效性校验兜底"""
         if not name:
             return False

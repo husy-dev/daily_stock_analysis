@@ -140,7 +140,7 @@ class MarketAnalyzer:
             getattr(getattr(self, "config", None), "report_language", "zh")
         )
 
-    def _get_market_scope_name(self, review_language: str | None = None) -> str:
+    def _get_market_scope_name(self, review_language: Optional[str] = None) -> str:
         review_language = review_language or self._get_review_language()
         if self.region == "us":
             return "US market"
@@ -241,7 +241,7 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
 - Balanced: index divergence or low-volume consolidation; keep sizing controlled and wait for confirmation.
 - Defensive: indices weaken and laggards broaden; prioritize risk control and de-risking."""
 
-    def _get_strategy_markdown_block(self, review_language: str | None = None) -> str:
+    def _get_strategy_markdown_block(self, review_language: Optional[str] = None) -> str:
         review_language = review_language or self._get_review_language()
         if self.region == "hk" and review_language == "en":
             return """### 6. Strategy Framework
@@ -257,7 +257,7 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
 - **Leading Themes**: Focus on sectors with catalysts and sustained leadership while avoiding broadening weakness.
 """
 
-    def _get_market_mood_text(self, mood_key: str, review_language: str | None = None) -> str:
+    def _get_market_mood_text(self, mood_key: str, review_language: Optional[str] = None) -> str:
         review_language = review_language or self._get_review_language()
         if review_language == "en":
             mapping = {
@@ -911,7 +911,7 @@ Lagging: {bottom_sectors_text if bottom_sectors_text else "N/A"}"""
             return f"""You are a professional US/A/H market analyst. Please produce a concise market recap report based on the data below.
 
 [Requirements]
-- Output pure Markdown only
+- Output pure Text only
 - No JSON
 - No code blocks
 - Use emoji sparingly in headings (at most one per heading)
@@ -974,7 +974,7 @@ Output the report content directly, no extra commentary.
         return f"""你是一位专业的A/H/美股市场分析师，请根据以下数据生成一份结构化的{self._get_market_scope_name('zh')}大盘复盘报告。
 
 【重要】输出要求：
-- 必须输出纯 Markdown 文本格式
+- 必须输出纯 Text 文本格式
 - 禁止输出 JSON 格式
 - 禁止输出代码块
 - emoji 仅在标题处少量使用（每个标题最多1个）

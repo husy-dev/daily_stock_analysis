@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -28,7 +28,7 @@ class SystemConfigFieldSchema(BaseModel):
     is_required: bool
     is_editable: bool
     default_value: Optional[str] = None
-    options: List[str | SystemConfigOption] = Field(default_factory=list)
+    options: List[Union[str, SystemConfigOption]] = Field(default_factory=list)
     validation: Dict[str, Any] = Field(default_factory=dict)
     display_order: int
 

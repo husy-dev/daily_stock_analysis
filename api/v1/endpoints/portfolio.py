@@ -39,8 +39,12 @@ from src.services.portfolio_service import (
     PortfolioOversellError,
     PortfolioService,
 )
+from src.storage import DatabaseManager
 
 logger = logging.getLogger(__name__)
+
+# 全局数据库管理器实例
+db_manager = DatabaseManager.get_instance()
 
 router = APIRouter()
 
@@ -84,6 +88,8 @@ def _serialize_import_record(item: dict) -> PortfolioImportTradeItem:
     summary="Create portfolio account",
 )
 def create_account(request: PortfolioAccountCreateRequest) -> PortfolioAccountItem:
+    # 确保数据库已初始化
+    db_manager = DatabaseManager.get_instance()
     service = PortfolioService()
     try:
         row = service.create_account(
@@ -106,13 +112,18 @@ def create_account(request: PortfolioAccountCreateRequest) -> PortfolioAccountIt
     responses={500: {"model": ErrorResponse}},
     summary="List portfolio accounts",
 )
-def list_accounts(
-    include_inactive: bool = Query(False, description="Whether to include inactive accounts"),
-) -> PortfolioAccountListResponse:
+def list_accounts(is_active: Optional[bool] = Query(None)) -> PortfolioAccountListResponse:
+    # 确保数据库已初始化
+    db_manager = DatabaseManager.get_instance()
     service = PortfolioService()
     try:
-        rows = service.list_accounts(include_inactive=include_inactive)
-        return PortfolioAccountListResponse(accounts=[PortfolioAccountItem(**item) for item in rows])
+        # Note: PortfolioService.list_accounts does not accept is_active parameter
+        # We'll return all accounts and let frontend handle filtering if needed
+        rows = service.list_accounts()
+        if is_active is not None:
+            # Filter accounts based on is_active flag if specified
+            rows = [row for row in rows if row['is_active'] == is_active]
+        return PortfolioAccountListResponse(accounts=[PortfolioAccountItem(**row) for row in rows])
     except Exception as exc:
         raise _internal_error("List accounts failed", exc)
 
@@ -124,10 +135,12 @@ def list_accounts(
     summary="Update portfolio account",
 )
 def update_account(account_id: int, request: PortfolioAccountUpdateRequest) -> PortfolioAccountItem:
+    # 确保数据库已初始化
+    db_manager = DatabaseManager.get_instance()
     service = PortfolioService()
     try:
-        updated = service.update_account(
-            account_id,
+        row = service.update_account(
+            account_id=account_id,
             name=request.name,
             broker=request.broker,
             market=request.market,
@@ -135,14 +148,9 @@ def update_account(account_id: int, request: PortfolioAccountUpdateRequest) -> P
             owner_id=request.owner_id,
             is_active=request.is_active,
         )
-        if updated is None:
-            raise HTTPException(
-                status_code=404,
-                detail={"error": "not_found", "message": f"Account not found: {account_id}"},
-            )
-        return PortfolioAccountItem(**updated)
-    except HTTPException:
-        raise
+        if not row:
+            raise HTTPException(status_code=404, detail="Account not found")
+        return PortfolioAccountItem(**row)
     except ValueError as exc:
         raise _bad_request(exc)
     except Exception as exc:
@@ -151,35 +159,38 @@ def update_account(account_id: int, request: PortfolioAccountUpdateRequest) -> P
 
 @router.delete(
     "/accounts/{account_id}",
-    responses={404: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
-    summary="Deactivate portfolio account",
+    response_model=PortfolioDeleteResponse,
+    responses={500: {"model": ErrorResponse}},
+    summary="Delete portfolio account and all related events",
 )
-def delete_account(account_id: int):
+def delete_account(account_id: int) -> PortfolioDeleteResponse:
+    # 确保数据库已初始化
+    db_manager = DatabaseManager.get_instance()
     service = PortfolioService()
     try:
-        ok = service.deactivate_account(account_id)
-        if not ok:
-            raise HTTPException(
-                status_code=404,
-                detail={"error": "not_found", "message": f"Account not found: {account_id}"},
-            )
-        return {"deleted": 1}
-    except HTTPException:
-        raise
+        count = service.delete_account(account_id=account_id)
+        return PortfolioDeleteResponse(deleted_count=count)
+    except PortfolioBusyError:
+        raise HTTPException(
+            status_code=409,
+            detail="Account is busy with ongoing operations, please try again later",
+        )
     except Exception as exc:
-        raise _internal_error("Deactivate account failed", exc)
+        raise _internal_error("Delete account failed", exc)
 
 
 @router.post(
     "/trades",
     response_model=PortfolioEventCreatedResponse,
     responses={400: {"model": ErrorResponse}, 409: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
-    summary="Record trade event",
+    summary="Record portfolio trade event",
 )
 def create_trade(request: PortfolioTradeCreateRequest) -> PortfolioEventCreatedResponse:
+    # 确保数据库已初始化
+    db_manager = DatabaseManager.get_instance()
     service = PortfolioService()
     try:
-        data = service.record_trade(
+        row = service.record_trade(
             account_id=request.account_id,
             symbol=request.symbol,
             trade_date=request.trade_date,
@@ -193,15 +204,14 @@ def create_trade(request: PortfolioTradeCreateRequest) -> PortfolioEventCreatedR
             trade_uid=request.trade_uid,
             note=request.note,
         )
-        return PortfolioEventCreatedResponse(**data)
-    except PortfolioBusyError as exc:
-        raise _conflict_error(error="portfolio_busy", message=str(exc))
-    except PortfolioOversellError as exc:
-        raise _conflict_error(error="portfolio_oversell", message=str(exc))
-    except PortfolioConflictError as exc:
-        raise _conflict_error(error="conflict", message=str(exc))
-    except ValueError as exc:
+        return PortfolioEventCreatedResponse(id=row["id"])
+    except (ValueError, PortfolioConflictError) as exc:
         raise _bad_request(exc)
+    except PortfolioBusyError:
+        raise HTTPException(
+            status_code=409,
+            detail="Account is busy with ongoing operations, please try again later",
+        )
     except Exception as exc:
         raise _internal_error("Create trade failed", exc)
 
@@ -209,70 +219,55 @@ def create_trade(request: PortfolioTradeCreateRequest) -> PortfolioEventCreatedR
 @router.get(
     "/trades",
     response_model=PortfolioTradeListResponse,
-    responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
-    summary="List trade events",
+    responses={500: {"model": ErrorResponse}},
+    summary="List portfolio trade events with pagination",
 )
 def list_trades(
-    account_id: Optional[int] = Query(None, description="Optional account id"),
-    date_from: Optional[date] = Query(None, description="Trade date from"),
-    date_to: Optional[date] = Query(None, description="Trade date to"),
-    symbol: Optional[str] = Query(None, description="Optional stock symbol filter"),
-    side: Optional[str] = Query(None, description="Optional side filter: buy/sell"),
+    account_id: Optional[int] = Query(None),
+    symbol: Optional[str] = Query(None),
+    side: Optional[str] = Query(None),
+    date_from: Optional[date] = Query(None),
+    date_to: Optional[date] = Query(None),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
 ) -> PortfolioTradeListResponse:
+    # 确保数据库已初始化
+    db_manager = DatabaseManager.get_instance()
     service = PortfolioService()
     try:
-        data = service.list_trade_events(
+        result = service.list_trade_events(
             account_id=account_id,
-            date_from=date_from,
-            date_to=date_to,
             symbol=symbol,
             side=side,
+            date_from=date_from,
+            date_to=date_to,
             page=page,
             page_size=page_size,
         )
-        return PortfolioTradeListResponse(**data)
+        return PortfolioTradeListResponse(
+            items=result["items"],
+            total=result["total"],
+            page=result["page"],
+            page_size=result["page_size"],
+        )
     except ValueError as exc:
         raise _bad_request(exc)
     except Exception as exc:
-        raise _internal_error("List trade events failed", exc)
-
-
-@router.delete(
-    "/trades/{trade_id}",
-    response_model=PortfolioDeleteResponse,
-    responses={404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
-    summary="Delete trade event",
-)
-def delete_trade(trade_id: int) -> PortfolioDeleteResponse:
-    service = PortfolioService()
-    try:
-        ok = service.delete_trade_event(trade_id)
-        if not ok:
-            raise HTTPException(
-                status_code=404,
-                detail={"error": "not_found", "message": f"Trade not found: {trade_id}"},
-            )
-        return PortfolioDeleteResponse(deleted=1)
-    except PortfolioBusyError as exc:
-        raise _conflict_error(error="portfolio_busy", message=str(exc))
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise _internal_error("Delete trade event failed", exc)
+        raise _internal_error("List trades failed", exc)
 
 
 @router.post(
     "/cash-ledger",
     response_model=PortfolioEventCreatedResponse,
     responses={400: {"model": ErrorResponse}, 409: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
-    summary="Record cash event",
+    summary="Record portfolio cash ledger event",
 )
 def create_cash_ledger(request: PortfolioCashLedgerCreateRequest) -> PortfolioEventCreatedResponse:
+    # 确保数据库已初始化
+    db_manager = DatabaseManager.get_instance()
     service = PortfolioService()
     try:
-        data = service.record_cash_ledger(
+        row = service.record_cash_ledger(
             account_id=request.account_id,
             event_date=request.event_date,
             direction=request.direction,
@@ -280,68 +275,54 @@ def create_cash_ledger(request: PortfolioCashLedgerCreateRequest) -> PortfolioEv
             currency=request.currency,
             note=request.note,
         )
-        return PortfolioEventCreatedResponse(**data)
-    except PortfolioBusyError as exc:
-        raise _conflict_error(error="portfolio_busy", message=str(exc))
-    except ValueError as exc:
+        return PortfolioEventCreatedResponse(id=row["id"])
+    except (ValueError, PortfolioConflictError) as exc:
         raise _bad_request(exc)
+    except PortfolioBusyError:
+        raise HTTPException(
+            status_code=409,
+            detail="Account is busy with ongoing operations, please try again later",
+        )
     except Exception as exc:
-        raise _internal_error("Create cash ledger event failed", exc)
+        raise _internal_error("Create cash ledger failed", exc)
 
 
 @router.get(
     "/cash-ledger",
     response_model=PortfolioCashLedgerListResponse,
-    responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
-    summary="List cash ledger events",
+    responses={500: {"model": ErrorResponse}},
+    summary="List portfolio cash ledger events with pagination",
 )
 def list_cash_ledger(
-    account_id: Optional[int] = Query(None, description="Optional account id"),
-    date_from: Optional[date] = Query(None, description="Cash event date from"),
-    date_to: Optional[date] = Query(None, description="Cash event date to"),
-    direction: Optional[str] = Query(None, description="Optional direction filter: in/out"),
+    account_id: Optional[int] = Query(None, description="Optional account ID to filter cash ledger events, omit for all accounts"),
+    direction: Optional[str] = Query(None),
+    date_from: Optional[date] = Query(None),
+    date_to: Optional[date] = Query(None),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
 ) -> PortfolioCashLedgerListResponse:
+    # 确保数据库已初始化
+    db_manager = DatabaseManager.get_instance()
     service = PortfolioService()
     try:
-        data = service.list_cash_ledger_events(
+        result = service.list_cash_ledger_events(
             account_id=account_id,
+            direction=direction,
             date_from=date_from,
             date_to=date_to,
-            direction=direction,
             page=page,
             page_size=page_size,
         )
-        return PortfolioCashLedgerListResponse(**data)
+        return PortfolioCashLedgerListResponse(
+            items=result["items"],
+            total=result["total"],
+            page=result["page"],
+            page_size=result["page_size"],
+        )
     except ValueError as exc:
         raise _bad_request(exc)
     except Exception as exc:
-        raise _internal_error("List cash ledger events failed", exc)
-
-
-@router.delete(
-    "/cash-ledger/{entry_id}",
-    response_model=PortfolioDeleteResponse,
-    responses={404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
-    summary="Delete cash ledger event",
-)
-def delete_cash_ledger(entry_id: int) -> PortfolioDeleteResponse:
-    service = PortfolioService()
-    try:
-        ok = service.delete_cash_ledger_event(entry_id)
-        if not ok:
-            raise HTTPException(
-                status_code=404,
-                detail={"error": "not_found", "message": f"Cash ledger entry not found: {entry_id}"},
-            )
-        return PortfolioDeleteResponse(deleted=1)
-    except PortfolioBusyError as exc:
-        raise _conflict_error(error="portfolio_busy", message=str(exc))
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise _internal_error("Delete cash ledger event failed", exc)
+        raise _internal_error("List cash ledger failed", exc)
 
 
 @router.post(
@@ -351,9 +332,11 @@ def delete_cash_ledger(entry_id: int) -> PortfolioDeleteResponse:
     summary="Record corporate action event",
 )
 def create_corporate_action(request: PortfolioCorporateActionCreateRequest) -> PortfolioEventCreatedResponse:
+    # 确保数据库已初始化
+    db_manager = DatabaseManager.get_instance()
     service = PortfolioService()
     try:
-        data = service.record_corporate_action(
+        row = service.record_corporate_action(
             account_id=request.account_id,
             symbol=request.symbol,
             effective_date=request.effective_date,
@@ -364,107 +347,206 @@ def create_corporate_action(request: PortfolioCorporateActionCreateRequest) -> P
             split_ratio=request.split_ratio,
             note=request.note,
         )
-        return PortfolioEventCreatedResponse(**data)
-    except PortfolioBusyError as exc:
-        raise _conflict_error(error="portfolio_busy", message=str(exc))
-    except ValueError as exc:
+        return PortfolioEventCreatedResponse(id=row["id"])
+    except (ValueError, PortfolioConflictError) as exc:
         raise _bad_request(exc)
+    except PortfolioBusyError:
+        raise HTTPException(
+            status_code=409,
+            detail="Account is busy with ongoing operations, please try again later",
+        )
     except Exception as exc:
-        raise _internal_error("Create corporate action event failed", exc)
+        raise _internal_error("Create corporate action failed", exc)
 
 
 @router.get(
     "/corporate-actions",
     response_model=PortfolioCorporateActionListResponse,
-    responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
-    summary="List corporate action events",
+    responses={500: {"model": ErrorResponse}},
+    summary="List corporate action events with pagination",
 )
 def list_corporate_actions(
-    account_id: Optional[int] = Query(None, description="Optional account id"),
-    date_from: Optional[date] = Query(None, description="Corporate action effective date from"),
-    date_to: Optional[date] = Query(None, description="Corporate action effective date to"),
-    symbol: Optional[str] = Query(None, description="Optional stock symbol filter"),
-    action_type: Optional[str] = Query(None, description="Optional action type filter"),
+    account_id: Optional[int] = Query(None, description="Optional account ID to filter corporate actions, omit for all accounts"),
+    symbol: Optional[str] = Query(None),
+    action_type: Optional[str] = Query(None),
+    date_from: Optional[date] = Query(None),
+    date_to: Optional[date] = Query(None),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
 ) -> PortfolioCorporateActionListResponse:
+    # 确保数据库已初始化
+    db_manager = DatabaseManager.get_instance()
     service = PortfolioService()
     try:
-        data = service.list_corporate_action_events(
+        result = service.list_corporate_actions(
             account_id=account_id,
-            date_from=date_from,
-            date_to=date_to,
             symbol=symbol,
             action_type=action_type,
+            date_from=date_from,
+            date_to=date_to,
             page=page,
             page_size=page_size,
         )
-        return PortfolioCorporateActionListResponse(**data)
+        return PortfolioCorporateActionListResponse(
+            items=result["items"],
+            total=result["total"],
+            page=result["page"],
+            page_size=result["page_size"],
+        )
     except ValueError as exc:
         raise _bad_request(exc)
     except Exception as exc:
-        raise _internal_error("List corporate action events failed", exc)
+        raise _internal_error("List corporate actions failed", exc)
 
 
-@router.delete(
-    "/corporate-actions/{action_id}",
-    response_model=PortfolioDeleteResponse,
-    responses={404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
-    summary="Delete corporate action event",
+@router.get(
+    "/risk",
+    response_model=PortfolioRiskResponse,
+    responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
+    summary="Get portfolio risk analysis",
 )
-def delete_corporate_action(action_id: int) -> PortfolioDeleteResponse:
+def get_portfolio_risk(
+    account_id: Optional[int] = Query(None, description="Optional account ID to analyze specific account"),
+    as_of: Optional[date] = Query(None, description="Date to calculate risk for (default: today)"),
+    cost_method: str = Query("fifo", description="Cost calculation method: fifo or avg"),
+) -> PortfolioRiskResponse:
+    # 确保数据库已初始化
+    db_manager = DatabaseManager.get_instance()
+    risk_service = PortfolioRiskService()
+    try:
+        risk_analysis = risk_service.get_risk_report(
+            account_id=account_id,
+            as_of=as_of,
+            cost_method=cost_method,
+        )
+        return PortfolioRiskResponse(**risk_analysis)
+    except ValueError as exc:
+        raise _bad_request(exc)
+    except Exception as exc:
+        raise _internal_error("Get portfolio risk analysis failed", exc)
+
+
+@router.post(
+    "/fx/refresh",
+    response_model=PortfolioFxRefreshResponse,
+    responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
+    summary="Refresh FX rates for portfolio accounts",
+)
+def refresh_fx_rates(
+    account_id: Optional[int] = Query(None, description="Optional account ID to refresh specific account FX rates"),
+    as_of: Optional[date] = Query(None, description="Date to refresh FX rates for (default: today)"),
+) -> PortfolioFxRefreshResponse:
+    # 确保数据库已初始化
+    db_manager = DatabaseManager.get_instance()
     service = PortfolioService()
     try:
-        ok = service.delete_corporate_action_event(action_id)
-        if not ok:
-            raise HTTPException(
-                status_code=404,
-                detail={"error": "not_found", "message": f"Corporate action not found: {action_id}"},
-            )
-        return PortfolioDeleteResponse(deleted=1)
-    except PortfolioBusyError as exc:
-        raise _conflict_error(error="portfolio_busy", message=str(exc))
-    except HTTPException:
-        raise
+        fx_refresh_result = service.refresh_fx_rates(
+            account_id=account_id,
+            as_of=as_of,
+        )
+        return PortfolioFxRefreshResponse(**fx_refresh_result)
+    except ValueError as exc:
+        raise _bad_request(exc)
     except Exception as exc:
-        raise _internal_error("Delete corporate action event failed", exc)
+        raise _internal_error("Refresh FX rates failed", exc)
+
+
+@router.get(
+    "/imports/csv/brokers",
+    response_model=PortfolioImportBrokerListResponse,
+    responses={500: {"model": ErrorResponse}},
+    summary="List supported broker CSV parsers",
+)
+def list_csv_brokers() -> PortfolioImportBrokerListResponse:
+    # 确保数据库已初始化
+    db_manager = DatabaseManager.get_instance()
+    importer = PortfolioImportService()
+    try:
+        return PortfolioImportBrokerListResponse(brokers=importer.list_supported_brokers())
+    except Exception as exc:
+        raise _internal_error("List CSV brokers failed", exc)
+
+
+@router.get(
+    "/imports/positions/brokers",
+    response_model=PortfolioImportBrokerListResponse,
+    responses={500: {"model": ErrorResponse}},
+    summary="List supported broker position snapshot parsers",
+)
+def list_position_brokers() -> PortfolioImportBrokerListResponse:
+    # 确保数据库已初始化
+    db_manager = DatabaseManager.get_instance()
+    importer = PortfolioImportService()
+    try:
+        return PortfolioImportBrokerListResponse(brokers=importer.list_supported_position_parsers())
+    except Exception as exc:
+        raise _internal_error("List position snapshot brokers failed", exc)
 
 
 @router.get(
     "/snapshot",
     response_model=PortfolioSnapshotResponse,
     responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
-    summary="Get portfolio snapshot",
+    summary="Get portfolio snapshot for all accounts",
 )
-def get_snapshot(
-    account_id: Optional[int] = Query(None, description="Optional account id, default returns all accounts"),
-    as_of: Optional[date] = Query(None, description="Snapshot date, default today"),
-    cost_method: str = Query("fifo", description="Cost method: fifo or avg"),
+def get_portfolio_snapshot(
+    cost_method: str = Query("fifo", description="Cost calculation method: fifo/avg"),
+    as_of: Optional[date] = Query(None, description="Date to calculate snapshot for (defaults to today)"),
 ) -> PortfolioSnapshotResponse:
+    # 确保数据库已初始化
+    db_manager = DatabaseManager.get_instance()
     service = PortfolioService()
     try:
-        data = service.get_portfolio_snapshot(
-            account_id=account_id,
-            as_of=as_of,
+        snapshot = service.get_portfolio_snapshot(
             cost_method=cost_method,
+            as_of=as_of,
         )
-        return PortfolioSnapshotResponse(**data)
+        return PortfolioSnapshotResponse(**snapshot)
     except ValueError as exc:
         raise _bad_request(exc)
     except Exception as exc:
-        raise _internal_error("Get snapshot failed", exc)
+        raise _internal_error("Get portfolio snapshot failed", exc)
+
+
+@router.get(
+    "/snapshot/{account_id}",
+    response_model=PortfolioSnapshotResponse,
+    responses={400: {"model": ErrorResponse}, 404: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
+    summary="Get portfolio snapshot for specific account",
+)
+def get_account_snapshot(
+    account_id: int,
+    cost_method: str = Query("fifo", description="Cost calculation method: fifo/avg"),
+    as_of: Optional[date] = Query(None, description="Date to calculate snapshot for (defaults to today)"),
+) -> PortfolioSnapshotResponse:
+    # 确保数据库已初始化
+    db_manager = DatabaseManager.get_instance()
+    service = PortfolioService()
+    try:
+        snapshot = service.get_portfolio_snapshot(
+            account_id=account_id,
+            cost_method=cost_method,
+            as_of=as_of,
+        )
+        return PortfolioSnapshotResponse(**snapshot)
+    except ValueError as exc:
+        raise _bad_request(exc)
+    except Exception as exc:
+        raise _internal_error("Get account snapshot failed", exc)
 
 
 @router.post(
     "/imports/csv/parse",
     response_model=PortfolioImportParseResponse,
     responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
-    summary="Parse broker CSV into normalized trade records",
+    summary="Parse broker CSV/Excel with preview (no commit)",
 )
 def parse_csv_import(
     broker: str = Form(..., description="Broker id: huatai/citic/cmb"),
-    file: UploadFile = File(...),
+    file: UploadFile = File(..., description="CSV or Excel file (.csv, .xlsx)"),
 ) -> PortfolioImportParseResponse:
+    # 确保数据库已初始化
+    db_manager = DatabaseManager.get_instance()
     importer = PortfolioImportService()
     try:
         content = file.file.read()
@@ -480,35 +562,23 @@ def parse_csv_import(
     except ValueError as exc:
         raise _bad_request(exc)
     except Exception as exc:
-        raise _internal_error("Parse CSV import failed", exc)
-
-
-@router.get(
-    "/imports/csv/brokers",
-    response_model=PortfolioImportBrokerListResponse,
-    responses={500: {"model": ErrorResponse}},
-    summary="List supported broker CSV parsers",
-)
-def list_csv_brokers() -> PortfolioImportBrokerListResponse:
-    importer = PortfolioImportService()
-    try:
-        return PortfolioImportBrokerListResponse(brokers=importer.list_supported_brokers())
-    except Exception as exc:
-        raise _internal_error("List CSV brokers failed", exc)
+        raise _internal_error("Parse CSV/Excel import failed", exc)
 
 
 @router.post(
     "/imports/csv/commit",
     response_model=PortfolioImportCommitResponse,
     responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
-    summary="Parse and commit broker CSV with dedup",
+    summary="Parse and commit broker CSV/Excel with dedup",
 )
 def commit_csv_import(
     account_id: int = Form(...),
     broker: str = Form(..., description="Broker id: huatai/citic/cmb"),
     dry_run: bool = Form(False),
-    file: UploadFile = File(...),
+    file: UploadFile = File(..., description="CSV or Excel file (.csv, .xlsx)"),
 ) -> PortfolioImportCommitResponse:
+    # 确保数据库已初始化
+    db_manager = DatabaseManager.get_instance()
     importer = PortfolioImportService()
     try:
         content = file.file.read()
@@ -523,45 +593,51 @@ def commit_csv_import(
     except ValueError as exc:
         raise _bad_request(exc)
     except Exception as exc:
-        raise _internal_error("Commit CSV import failed", exc)
+        raise _internal_error("Commit CSV/Excel import failed", exc)
 
 
 @router.post(
-    "/fx/refresh",
-    response_model=PortfolioFxRefreshResponse,
+    "/imports/positions/parse",
+    response_model=PortfolioImportParseResponse,
     responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
-    summary="Refresh FX cache online with stale fallback",
+    summary="Parse broker position snapshot CSV/Excel with preview (no commit)",
 )
-def refresh_fx_rates(
-    account_id: Optional[int] = Query(None, description="Optional account id"),
-    as_of: Optional[date] = Query(None, description="Rate date, default today"),
-) -> PortfolioFxRefreshResponse:
-    service = PortfolioService()
+def parse_position_import(
+    broker: str = Form(..., description="Broker id: cmb_snapshot"),
+    file: UploadFile = File(..., description="CSV or Excel file (.csv, .xlsx)"),
+) -> PortfolioImportParseResponse:
+    # 确保数据库已初始化
+    db_manager = DatabaseManager.get_instance()
+    importer = PortfolioImportService()
     try:
-        data = service.refresh_fx_rates(account_id=account_id, as_of=as_of)
-        return PortfolioFxRefreshResponse(**data)
+        content = file.file.read()
+        parsed = importer.parse_position_csv(broker=broker, content=content)
+        # Convert position records to the same format as trade records for consistency
+        records = []
+        for item in parsed.get("records", []):
+            # Map position data to trade record format for display purposes
+            trade_format_item = {
+                "trade_date": "N/A",  # Placeholder for position data
+                "symbol": item.get("symbol", ""),
+                "side": "hold",  # Indicates holding position
+                "quantity": item.get("quantity", 0),
+                "price": item.get("current_price", 0),  # Use current price as placeholder
+                "fee": 0.0,
+                "tax": 0.0,
+                "dedup_hash": f"pos_{item.get('symbol', '')}_{item.get('quantity', 0)}",
+                "currency": "CNY"  # Default currency
+            }
+            records.append(PortfolioImportTradeItem(**trade_format_item))
+        
+        return PortfolioImportParseResponse(
+            broker=parsed["broker"],
+            record_count=parsed["record_count"],
+            skipped_count=parsed["skipped_count"],
+            error_count=parsed["error_count"],
+            records=records,
+            errors=list(parsed.get("errors", [])),
+        )
     except ValueError as exc:
         raise _bad_request(exc)
     except Exception as exc:
-        raise _internal_error("Refresh FX rates failed", exc)
-
-
-@router.get(
-    "/risk",
-    response_model=PortfolioRiskResponse,
-    responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
-    summary="Get portfolio risk report",
-)
-def get_risk_report(
-    account_id: Optional[int] = Query(None, description="Optional account id"),
-    as_of: Optional[date] = Query(None, description="Risk report date, default today"),
-    cost_method: str = Query("fifo", description="Cost method: fifo or avg"),
-) -> PortfolioRiskResponse:
-    service = PortfolioRiskService()
-    try:
-        data = service.get_risk_report(account_id=account_id, as_of=as_of, cost_method=cost_method)
-        return PortfolioRiskResponse(**data)
-    except ValueError as exc:
-        raise _bad_request(exc)
-    except Exception as exc:
-        raise _internal_error("Get risk report failed", exc)
+        raise _internal_error("Parse position CSV/Excel import failed", exc)

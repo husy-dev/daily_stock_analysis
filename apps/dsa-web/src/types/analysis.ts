@@ -234,6 +234,28 @@ export interface HistoryPagination {
   limit: number;
 }
 
+// ============ Stock Metrics Types (Dashboard) ============
+
+/** Stock metrics for dashboard */
+export interface StockMetrics {
+  id: number;
+  code: string;
+  name?: string;
+  currentPrice?: number;      // 当前价格
+  changePct?: number;         // 涨跌幅 (%)
+  marketCap?: number;         // 市值（万亿 或 亿）
+  dividendYield?: number;     // 股息率 (%)
+  volatility?: number;        // 波动率 (%)
+  dataSource?: string;        // 数据来源
+  updatedAt: string;          // 最后更新时间
+}
+
+/** Dashboard metrics response */
+export interface DashboardMetricsResponse {
+  total: number;
+  items: StockMetrics[];
+}
+
 // ============ Error Types ============
 
 export interface ApiError {

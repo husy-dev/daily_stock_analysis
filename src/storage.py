@@ -273,6 +273,54 @@ class AnalysisHistory(Base):
         }
 
 
+class StockMetrics(Base):
+    """
+    股票关键指标快照
+    
+    存储每只股票的关键指标（股息率、市值、波动率等），
+    每日更新，用于前端仪表板展示
+    """
+    __tablename__ = 'stock_metrics'
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    
+    # 股票信息
+    code = Column(String(10), nullable=False, index=True, unique=True)
+    name = Column(String(50))
+    
+    # 价格信息
+    current_price = Column(Float)      # 当前价格
+    change_pct = Column(Float)         # 涨跌幅 (%)
+    
+    # 关键指标
+    market_cap = Column(Float)         # 市值（单位：万亿 或 亿）
+    dividend_yield = Column(Float)     # 股息率 (%)
+    volatility = Column(Float)         # 波动率 (%)
+    
+    # 元数据
+    data_source = Column(String(50))   # 数据来源
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, index=True)
+    
+    __table_args__ = (
+        Index('ix_stock_metrics_updated', 'updated_at'),
+    )
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """转换为字典"""
+        return {
+            'id': self.id,
+            'code': self.code,
+            'name': self.name,
+            'current_price': self.current_price,
+            'change_pct': self.change_pct,
+            'market_cap': self.market_cap,
+            'dividend_yield': self.dividend_yield,
+            'volatility': self.volatility,
+            'data_source': self.data_source,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
 class BacktestResult(Base):
     """单条分析记录的回测结果。"""
 
@@ -2020,6 +2068,91 @@ class DatabaseManager:
                 )
             )
             return result.rowcount
+
+    # ------------------------------------------------------------------
+    # Stock metrics (for dashboard)
+    # ------------------------------------------------------------------
+
+    def save_stock_metrics(
+        self,
+        code: str,
+        name: Optional[str] = None,
+        current_price: Optional[float] = None,
+        change_pct: Optional[float] = None,
+        market_cap: Optional[float] = None,
+        dividend_yield: Optional[float] = None,
+        volatility: Optional[float] = None,
+        data_source: Optional[str] = None,
+    ) -> None:
+        """保存或更新股票指标"""
+        with self.session_scope() as session:
+            # 查找现有记录
+            existing = session.execute(
+                select(StockMetrics).where(StockMetrics.code == code)
+            ).scalar_one_or_none()
+            
+            if existing:
+                # 更新现有记录
+                if name is not None:
+                    existing.name = name
+                if current_price is not None:
+                    existing.current_price = current_price
+                if change_pct is not None:
+                    existing.change_pct = change_pct
+                if market_cap is not None:
+                    existing.market_cap = market_cap
+                if dividend_yield is not None:
+                    existing.dividend_yield = dividend_yield
+                if volatility is not None:
+                    existing.volatility = volatility
+                if data_source is not None:
+                    existing.data_source = data_source
+                existing.updated_at = datetime.now()
+            else:
+                # 创建新记录
+                new_metrics = StockMetrics(
+                    code=code,
+                    name=name,
+                    current_price=current_price,
+                    change_pct=change_pct,
+                    market_cap=market_cap,
+                    dividend_yield=dividend_yield,
+                    volatility=volatility,
+                    data_source=data_source,
+                )
+                session.add(new_metrics)
+            
+            session.commit()
+
+    def get_stock_metrics(self, code: str) -> Optional[Dict[str, Any]]:
+        """获取单只股票的指标"""
+        with self.session_scope() as session:
+            metrics = session.execute(
+                select(StockMetrics).where(StockMetrics.code == code)
+            ).scalar_one_or_none()
+            
+            return metrics.to_dict() if metrics else None
+
+    def get_all_stock_metrics(self) -> List[Dict[str, Any]]:
+        """获取所有股票的指标"""
+        with self.session_scope() as session:
+            metrics = session.execute(
+                select(StockMetrics).order_by(desc(StockMetrics.updated_at))
+            ).scalars().all()
+            
+            return [m.to_dict() for m in metrics]
+
+    def get_stock_metrics_by_codes(self, codes: List[str]) -> List[Dict[str, Any]]:
+        """按代码列表获取股票指标"""
+        if not codes:
+            return []
+        
+        with self.session_scope() as session:
+            metrics = session.execute(
+                select(StockMetrics).where(StockMetrics.code.in_(codes))
+            ).scalars().all()
+            
+            return [m.to_dict() for m in metrics]
 
     # ------------------------------------------------------------------
     # LLM usage tracking

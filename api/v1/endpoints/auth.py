@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import logging
 import os
+from typing import Optional
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
@@ -45,7 +46,7 @@ class LoginRequest(BaseModel):
     model_config = {"populate_by_name": True}
 
     password: str = Field(default="", description="Admin password")
-    password_confirm: str | None = Field(default=None, alias="passwordConfirm", description="Confirm (first-time)")
+    password_confirm: Optional[str] = Field(default=None, alias="passwordConfirm", description="Confirm (first-time)")
 
 
 class ChangePasswordRequest(BaseModel):
@@ -65,7 +66,7 @@ class AuthSettingsRequest(BaseModel):
 
     auth_enabled: bool = Field(alias="authEnabled")
     password: str = Field(default="")
-    password_confirm: str | None = Field(default=None, alias="passwordConfirm")
+    password_confirm: Optional[str] = Field(default=None, alias="passwordConfirm")
     current_password: str = Field(default="", alias="currentPassword")
 
 
@@ -94,7 +95,7 @@ def _cookie_params(request: Request) -> dict:
     }
 
 
-def _apply_auth_enabled(enabled: bool, request: Request | None = None) -> bool:
+def _apply_auth_enabled(enabled: bool, request: Optional[Request] = None) -> bool:
     """Persist auth toggle to .env and reload runtime config."""
     manager_applied = False
     if request is not None:
@@ -154,7 +155,7 @@ def _set_session_cookie(response: Response, session_value: str, request: Request
     )
 
 
-def _get_auth_status_dict(request: Request | None = None) -> dict:
+def _get_auth_status_dict(request: Optional[Request] = None) -> dict:
     """Helper to build consistent auth status response body."""
     auth_enabled = is_auth_enabled()
     logged_in = False

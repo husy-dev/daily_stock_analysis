@@ -12,7 +12,7 @@
 """
 
 import logging
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
 
@@ -385,5 +385,58 @@ def get_stock_history(
             detail={
                 "error": "internal_error",
                 "message": f"获取历史行情失败: {str(e)}"
+            }
+        )
+
+
+# ============================================================================
+# Dashboard / Metrics Endpoints
+# ============================================================================
+
+@router.get(
+    "/dashboard/metrics",
+    response_model=Dict[str, Any],
+    summary="获取所有股票指标",
+    description="获取自选股票的关键指标（股息率、市值、波动率等），用于仪表板展示",
+)
+def get_dashboard_metrics() -> Dict[str, Any]:
+    """
+    获取所有股票的关键指标
+    
+    返回格式：
+    {
+        "total": 10,
+        "items": [
+            {
+                "code": "600519",
+                "name": "贵州茅台",
+                "current_price": 2145.30,
+                "change_pct": 2.5,
+                "market_cap": 2.7,
+                "dividend_yield": 1.8,
+                "volatility": 22.5,
+                "updated_at": "2026-06-01T10:30:00"
+            }
+        ]
+    }
+    """
+    try:
+        from src.storage import get_db
+        
+        db = get_db()
+        metrics = db.get_all_stock_metrics()
+        
+        return {
+            "total": len(metrics),
+            "items": metrics
+        }
+    
+    except Exception as e:
+        logger.error(f"获取股票指标失败: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "internal_error",
+                "message": f"获取股票指标失败: {str(e)}"
             }
         )
